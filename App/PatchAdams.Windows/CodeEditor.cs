@@ -253,14 +253,14 @@ internal sealed partial class CodeEditor : RichTextBox
             {
                 paragraph.Background = mappedLines[index].Kind switch
                 {
-                    DisplayLineKind.Added => Brush("#263B2C"),
+                    DisplayLineKind.Added => Brush("#072312"),
                     DisplayLineKind.Removed => Brush("#472D33"),
                     _ => null
                 };
             }
             else if (!hasLineGutters && line.StartsWith("+ ", StringComparison.Ordinal))
             {
-                paragraph.Background = Brush("#263B2C");
+                paragraph.Background = Brush("#072312");
             }
             else if (!hasLineGutters && line.StartsWith("- ", StringComparison.Ordinal))
             {

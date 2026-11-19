@@ -55,6 +55,7 @@ internal static class Program
         window.Show();
         Pump();
         FontPreferencesTests.Run();
+        DiffBackgroundTests.Run();
         var handle = new WindowInteropHelper(window).EnsureHandle();
         palette.ApplyTitleBar(window);
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
@@ -72,7 +73,7 @@ internal static class Program
         {
             window.Close();
             app.Shutdown();
-            Console.WriteLine("PASS font preferences, live theme brushes, contrast, XAML construction, and native title bar");
+            Console.WriteLine("PASS font preferences, diff backgrounds, live theme brushes, contrast, XAML construction, and native title bar");
             return;
         }
         var sourceFinding = new SessionFinding(Guid.NewGuid(), "A", "source.cs", new LineSpan(4, 6),
