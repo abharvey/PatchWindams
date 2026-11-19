@@ -9,7 +9,7 @@ using PatchAdamsSharp;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext());
         var app = new App();
@@ -54,6 +54,8 @@ internal static class Program
         var window = new MainWindow();
         window.Show();
         Pump();
+        FontPreferencesTests.Run();
+        DiffBackgroundTests.Run();
         var handle = new WindowInteropHelper(window).EnsureHandle();
         palette.ApplyTitleBar(window);
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
@@ -66,6 +68,13 @@ internal static class Program
             var dark = 1;
             result = DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int));
             Equal(0, result, "dark title bar supported");
+        }
+        if (args.SequenceEqual(["--appearance-only"]))
+        {
+            window.Close();
+            app.Shutdown();
+            Console.WriteLine("PASS font preferences, diff backgrounds, live theme brushes, contrast, XAML construction, and native title bar");
+            return;
         }
         var sourceFinding = new SessionFinding(Guid.NewGuid(), "A", "source.cs", new LineSpan(4, 6),
             "source.cs L4:L6", "Finding title", "Keep description", "security", FindingSeverity.Blocking,
