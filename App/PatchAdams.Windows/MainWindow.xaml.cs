@@ -1904,6 +1904,14 @@ internal sealed class TextPromptDialog : Window
 internal sealed class PreferencesDialog : Window
 {
     private readonly TextBox fontFamilyBox = new() { MinWidth = 300, Margin = new Thickness(0, 4, 0, 10) };
+    private readonly TextBlock fontFamilyError = new()
+    {
+        Text = "This font family is not available. Enter its name from Windows Settings > Personalization > Fonts, " +
+               "including spaces. If you just installed it, restart PatchAdams# and try again.",
+        TextWrapping = TextWrapping.Wrap,
+        Margin = new Thickness(0, 0, 0, 10),
+        Visibility = Visibility.Collapsed
+    };
     private readonly TextBox fontSizeBox = new() { MinWidth = 80, Margin = new Thickness(0, 4, 0, 10) };
     private readonly CheckBox askBlindBox = new() { Content = "Ask whether to use blind mode for a new review" };
 
@@ -1926,8 +1934,9 @@ internal sealed class PreferencesDialog : Window
         askBlindBox.IsChecked = askBlindMode;
 
         var panel = new StackPanel { Margin = new Thickness(16) };
-        panel.Children.Add(new TextBlock { Text = "Monospace font family" });
+        panel.Children.Add(new TextBlock { Text = "Code font family" });
         panel.Children.Add(fontFamilyBox);
+        panel.Children.Add(fontFamilyError);
         panel.Children.Add(new TextBlock { Text = "Font size (9–24 pt)" });
         panel.Children.Add(fontSizeBox);
         panel.Children.Add(askBlindBox);
@@ -1942,21 +1951,22 @@ internal sealed class PreferencesDialog : Window
 
     private void Apply_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(SelectedFontFamily) ||
-            !double.TryParse(fontSizeBox.Text, System.Globalization.CultureInfo.InvariantCulture, out var size) ||
-            size is < 9 or > 24)
+        // Constructing FontFamily accepts unknown names and silently falls back.
+        // Match a whole installed family name, including localized names, instead.
+        var isAvailable = Fonts.SystemFontFamilies.Any(family =>
+            string.Equals(family.Source, SelectedFontFamily, StringComparison.OrdinalIgnoreCase) ||
+            family.FamilyNames.Values.Contains(SelectedFontFamily, StringComparer.OrdinalIgnoreCase));
+        fontFamilyError.Visibility = isAvailable ? Visibility.Collapsed : Visibility.Visible;
+        if (!isAvailable)
         {
-            MessageBox.Show(this, "Enter a font family and a size from 9 to 24.", "Settings",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            fontFamilyBox.Focus();
+            fontFamilyBox.SelectAll();
             return;
         }
-        try
+        if (!double.TryParse(fontSizeBox.Text, System.Globalization.CultureInfo.InvariantCulture, out var size) ||
+            size is < 9 or > 24)
         {
-            _ = new FontFamily(SelectedFontFamily);
-        }
-        catch (ArgumentException)
-        {
-            MessageBox.Show(this, "The font family is not valid.", "Settings",
+            MessageBox.Show(this, "Enter a size from 9 to 24.", "Settings",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
