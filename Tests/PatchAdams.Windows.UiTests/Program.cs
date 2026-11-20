@@ -1,12 +1,14 @@
 using System.Collections;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using PatchAdams.Core;
@@ -19,7 +21,7 @@ internal static class Program
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
         var app = new App();
         app.InitializeComponent();
@@ -30,8 +32,14 @@ internal static class Program
         window.Show();
         try
         {
-            RunNavigationTests(window);
+            var scrollbarsOnly = args.SequenceEqual(["--scrollbars-only"]);
+            RunNavigationTests(window, loadOnly: scrollbarsOnly);
             RunScrollbarTests(window);
+            if (scrollbarsOnly)
+            {
+                Console.WriteLine("PASS WPF scrollbars and native horizontal wheel/touchpad input.");
+                return 0;
+            }
             RunCopyCodeTests(window);
             RunSelectionTests(window);
             RunDisconnectedSelectionTests(window);
@@ -52,7 +60,7 @@ internal static class Program
         }
     }
 
-    private static void RunNavigationTests(MainWindow window)
+    private static void RunNavigationTests(MainWindow window, bool loadOnly = false)
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "Fixtures", "patches")))
@@ -79,6 +87,7 @@ internal static class Program
         Check(load.IsCompleted, "test patches finish loading");
         load.GetAwaiter().GetResult();
         Pump();
+        if (loadOnly) return;
 
         var columns = (IList)GetField(window, "columns")!;
         columns[1]!.GetType().GetProperty("IsHidden")!.SetValue(columns[1], true);
@@ -137,8 +146,8 @@ internal static class Program
         foreach (var bar in bars)
         {
             var track = (Track)bar.Template.FindName("PART_Track", bar);
-            Check(((SolidColorBrush)bar.Background).Color == Color.FromRgb(40, 44, 51) &&
-                  ((SolidColorBrush)track.Thumb.Background).Color == Color.FromRgb(129, 138, 152),
+            Check(((SolidColorBrush)bar.Background).Color == ThemePalette.Current["#282C33"] &&
+                  ((SolidColorBrush)track.Thumb.Background).Color == ThemePalette.Current["#818A98"],
                 $"{bar.Orientation} track and thumb use the contrast-tested dark palette");
             Check(track.Thumb.ActualWidth >= (bar.Orientation == Orientation.Vertical ? 6 : 24) &&
                   track.Thumb.ActualHeight >= (bar.Orientation == Orientation.Vertical ? 24 : 6),
@@ -174,6 +183,108 @@ internal static class Program
         });
         Pump();
         Check(viewer.VerticalOffset > before, "mouse-wheel scrolling is preserved");
+        RunHorizontalWheelTests(window, editor, viewer);
+    }
+
+    private static void RunHorizontalWheelTests(MainWindow window, RichTextBox editor, ScrollViewer viewer)
+    {
+        var editors = (IDictionary)GetField(window, "codeEditors")!;
+        var other = (RichTextBox)editors["A"]!;
+        var otherViewer = (ScrollViewer)other.Template.FindName("PART_ContentHost", other);
+        other.Focus();
+        viewer.ScrollToHorizontalOffset(viewer.ScrollableWidth / 2);
+        Pump();
+        var verticalBefore = viewer.VerticalOffset;
+        var otherBefore = otherViewer.HorizontalOffset;
+        var before = viewer.HorizontalOffset;
+        Check(SystemParametersInfo(0x006C, 0, out var characters, 0),
+            "read Windows horizontal wheel preference without changing user settings");
+        var step = characters == uint.MaxValue ? viewer.ViewportWidth : characters * 16d;
+
+        // Send the actual Windows message; a synthetic WPF MouseWheel event misses this bug.
+        SendHorizontalWheel(window, editor, 120);
+        Pump();
+        Check(Math.Abs(viewer.HorizontalOffset - Math.Min(viewer.ScrollableWidth, before + step)) < 0.1,
+            "native right tilt follows the Windows horizontal scrolling preference");
+        before = viewer.HorizontalOffset;
+        SendHorizontalWheel(window, editor, -120);
+        Pump();
+        Check(Math.Abs(viewer.HorizontalOffset - Math.Max(0, before - step)) < 0.1,
+            "native left tilt scrolls in the opposite direction");
+
+        viewer.ScrollToHorizontalOffset(0);
+        Pump();
+        SendHorizontalWheel(window, editor, 15);
+        Pump();
+        Check(Math.Abs(viewer.HorizontalOffset - Math.Min(viewer.ScrollableWidth, step / 8)) < 0.1,
+            "small touchpad deltas scroll proportionally rather than waiting for a full wheel notch");
+        viewer.ScrollToHorizontalOffset(0);
+        Pump();
+        for (var index = 0; index < 8; index++)
+            SendHorizontalWheel(window, editor, 15);
+        Pump();
+        Check(Math.Abs(viewer.HorizontalOffset - Math.Min(viewer.ScrollableWidth, step)) < 0.1,
+            "a burst of touchpad messages accumulates without losing distance");
+        Check(viewer.VerticalOffset == verticalBefore && otherViewer.HorizontalOffset == otherBefore &&
+              other.IsKeyboardFocusWithin, "horizontal input targets the hovered pane, not the focused pane or vertical axis");
+
+        viewer.ScrollToHorizontalOffset(viewer.ScrollableWidth);
+        Pump();
+        SendHorizontalWheel(window, editor, 120);
+        Pump();
+        Check(Math.Abs(viewer.HorizontalOffset - viewer.ScrollableWidth) < 0.1,
+            "rightward horizontal input stays at the right edge");
+        viewer.ScrollToHorizontalOffset(0);
+        Pump();
+        SendHorizontalWheel(window, editor, -120);
+        Pump();
+        Check(viewer.HorizontalOffset == 0, "leftward horizontal input stays at the left edge");
+
+        // Word-match adorners must not steal native horizontal input from the document below.
+        var layer = AdornerLayer.GetAdornerLayer(editor)!;
+        var overlay = new NonInteractiveOverlay(editor);
+        layer.Add(overlay);
+        try
+        {
+            Pump();
+            SendHorizontalWheel(window, editor, 120);
+            Pump();
+            Check(Math.Abs(viewer.HorizontalOffset - Math.Min(viewer.ScrollableWidth, step)) < 0.1,
+                "non-interactive editor overlays do not intercept horizontal input");
+        }
+        finally
+        {
+            layer.Remove(overlay);
+        }
+        viewer.ScrollToHorizontalOffset(0);
+        Pump();
+        SendHorizontalWheel(window, (FrameworkElement)window.FindName("SelectedFileText"), 120);
+        Pump();
+        Check(viewer.HorizontalOffset == 0 && otherViewer.HorizontalOffset == otherBefore,
+            "horizontal input outside a scroll viewer does not move an editor");
+    }
+
+    private static void SendHorizontalWheel(MainWindow window, FrameworkElement target, short delta)
+    {
+        var point = target.PointToScreen(new Point(target.ActualWidth / 2, target.ActualHeight / 2));
+        var coordinates = unchecked((ushort)(short)point.X | ((ushort)(short)point.Y << 16));
+        SendMessage(new WindowInteropHelper(window).Handle, 0x020E,
+            new IntPtr(delta << 16), new IntPtr(coordinates));
+    }
+
+    [DllImport("user32.dll", EntryPoint = "SendMessageW")]
+    private static extern IntPtr SendMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", EntryPoint = "SystemParametersInfoW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SystemParametersInfo(uint action, uint parameter, out uint value, uint flags);
+
+    private sealed class NonInteractiveOverlay : Adorner
+    {
+        public NonInteractiveOverlay(UIElement adorned) : base(adorned) => IsHitTestVisible = false;
+
+        protected override void OnRender(DrawingContext drawingContext) =>
+            drawingContext.DrawRectangle(Brushes.Transparent, null, new Rect(RenderSize));
     }
 
     private static void RunCopyCodeTests(MainWindow window)
