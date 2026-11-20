@@ -52,6 +52,7 @@ internal sealed partial class CodeEditor : RichTextBox
         };
         selectionTimer.Tick += SelectionTimer_Tick;
         InitializeWordMatching();
+        InitializeScrolling();
         Unloaded += (_, _) => CancelPendingSelection();
         AddHandler(CommandManager.PreviewExecutedEvent, new ExecutedRoutedEventHandler(CopyDisconnectedSelection));
         IsReadOnly = true;
