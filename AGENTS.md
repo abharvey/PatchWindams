@@ -54,5 +54,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 - Add fixture-backed tests with core behavior changes.
 - Keep changes grouped in feature-sized commits.
 - Use imperative commit subjects and explain why in the body.
-- Do not push or merge without explicit authorization.
+- Push each completed, validated feature set to a feature branch on the intended
+  shared remote and open a pull request, or update the existing pull request for
+  that branch, without waiting for another request. Do not leave finished work
+  local-only. Include validation results and known limitations in the pull request.
+- Require explicit authorization for the specific action before merging, enabling
+  auto-merge, pushing directly to `main` or another shared destination branch, or
+  force-pushing. Opening a pull request never authorizes landing it.
 - Never run destructive commands outside the attached worktree.
