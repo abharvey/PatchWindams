@@ -44,16 +44,28 @@ tests of the current engines and implementation tests for the Windows app.
 - Display two, three, or four patch columns and a shared file tree.
 - List every file touched by any patch. Per-patch file status distinguishes
   changed, added, deleted, unchanged, and failed-to-apply files.
-- Selecting a file opens it in every column. Columns show the full
-  post-patch file, additions, removals, and unchanged context. Removed lines
-  can be collapsed.
+- Click a file to select its row without changing open files. Double-click it
+  or press Enter to open the same path in every column and clear any overrides.
+- Drag a file row onto an expanded patch column to replace only that column's
+  file, leaving other columns and their scroll positions alone. Highlight only
+  columns whose patch touches the dragged path. A canceled or invalid drop
+  leaves all files open as they were. The file row's **Open in patch** menu
+  offers the same eligible columns without dragging.
+- Each patch has one open file; multiple patches may show the same path.
+  While there are overrides, show each column's path and a **Use shared file**
+  action in overridden columns. Overrides are not saved. Blind review clears
+  overrides and disables opening a file in an individual patch from the tree.
+- Columns show the full post-patch file, additions, removals, and unchanged
+  context. Removed lines can be collapsed.
 - Filter the shared tree to test-related files without dropping other files
   from the session.
 - Show both base and post-patch line numbers. Added lines map to their base
   context; references for removed lines use base line numbers and a `-L`
   prefix.
 - Keep columns independently scrollable; scroll lock synchronizes aligned
-  positions, not merely identical raw line numbers.
+  positions for columns showing the same path, not merely identical raw line
+  numbers. Automatic range alignment uses the same path; explicit comparison
+  findings can still collect evidence across paths.
 - Show each column label and patch source file name together. Expanded columns
   resize using splitters or a one-click approximate best fit for the currently
   displayed code, and can be reordered. Any column can collapse into a
@@ -61,8 +73,8 @@ tests of the current engines and implementation tests for the Windows app.
   Tabs retain their patch names (blind labels in blind mode); one to four
   columns can remain expanded. Collapsed columns retain their findings, and
   sessions restore their side and width.
-- Show the selected file's relative path once above the patch columns, with
-  the full path available on hover. Each expanded patch has an accessible
+- Show the shared file's relative path once above the patch columns, with the
+  full path available on hover. Each expanded patch has an accessible
   copy icon with a "copy code" tooltip. Copy the complete available post-patch
   text, independent of gutters, removals, golden mode, or reduced display.
   Omit unknown synthetic-base placeholders and report the incomplete result;
