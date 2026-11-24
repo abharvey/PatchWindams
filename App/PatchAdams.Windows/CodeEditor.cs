@@ -52,8 +52,11 @@ internal sealed partial class CodeEditor : RichTextBox
         };
         selectionTimer.Tick += SelectionTimer_Tick;
         InitializeWordMatching();
+        InitializeScrolling();
         Unloaded += (_, _) => CancelPendingSelection();
         AddHandler(CommandManager.PreviewExecutedEvent, new ExecutedRoutedEventHandler(CopyDisconnectedSelection));
+        // WPF's text-editing class handler selects the word before this instance handler runs.
+        AddHandler(Mouse.MouseDownEvent, new MouseButtonEventHandler(TrimDoubleClickedWord), handledEventsToo: true);
         IsReadOnly = true;
         IsReadOnlyCaretVisible = true;
         CaretBrush = Brush("#E5C07B");
@@ -65,6 +68,9 @@ internal sealed partial class CodeEditor : RichTextBox
         Foreground = Plain;
         BorderBrush = Brush("#818A98");
         Padding = new Thickness(12, 3, 3, 3);
+        // Keep code metrics independent of the surrounding UI's pixel-aligned text and layout.
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Ideal);
+        UseLayoutRounding = false;
         FontFamily = new FontFamily("Consolas");
         FontSize = 13;
         Document = new FlowDocument
@@ -96,6 +102,27 @@ internal sealed partial class CodeEditor : RichTextBox
         pressedButtons.Add(e.ChangedButton);
         InvalidateSelection();
         base.OnPreviewMouseDown(e);
+    }
+
+    private void TrimDoubleClickedWord(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left || e.ClickCount != 2 || ShiftPressed ||
+            IsScrollBarInteraction(e.OriginalSource))
+            return;
+
+        var text = Selection.Text;
+        if (text.Length == 0 || !char.IsWhiteSpace(text[^1]) || text.All(char.IsWhiteSpace))
+            return;
+
+        // Keep WPF's native word boundaries; remove only its trailing whitespace. Walking
+        // insertion positions also handles words/spaces split across syntax-colored runs.
+        var start = Selection.Start;
+        var end = Selection.End;
+        while (end.GetNextInsertionPosition(LogicalDirection.Backward) is { } previous &&
+               previous.CompareTo(start) >= 0 &&
+               new TextRange(previous, end).Text.All(char.IsWhiteSpace))
+            end = previous;
+        Selection.Select(start, end);
     }
 
     private bool IsScrollBarInteraction(object source)

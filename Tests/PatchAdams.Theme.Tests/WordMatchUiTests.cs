@@ -130,6 +130,7 @@ internal static class WordMatchUiTests
                 .Where(item => item.Geometry is EllipseGeometry).ToArray();
             Require(horizontalDots.Length == 2 && horizontalDots.All(dot => Math.Abs(dot.Geometry.Bounds.Left - 3.5) < 1),
                 "horizontal scrolling and resizing keep gutter markers fixed even for offscreen matches");
+            CheckDoubleClickSelections();
             host.Close();
             PumpUntil(() => Matches().Count == 0);
             Require(Matches().Count == 0, "unloading the editor removes match state");
@@ -167,6 +168,80 @@ internal static class WordMatchUiTests
         void Settled() => PumpUntil(() =>
             !(bool)type.GetField("selectionPending", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(editor)! &&
             type.GetField("wordMatchCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(editor) is null);
+        void CheckDoubleClickSelections()
+        {
+            var rangeInterface = typeof(TextRange).Assembly.GetType("System.Windows.Documents.ITextRange")!;
+            var selectWord = rangeInterface.GetMethod("SelectWord")!;
+            foreach (var (text, word) in new[]
+                     {
+                         ("first next", "first"), ("first   next", "first"), ("first\tnext", "first"),
+                         ("first\u00A0next", "first"), ("first", "first"), ("first,next", "first"),
+                         ("public static", "public"), ("πρώτο επόμενο", "πρώτο")
+                     })
+            {
+                Load([new(DisplayLineKind.Context, 1, 1, text)]);
+                var original = Text();
+                // Invoke the same WPF word-boundary algorithm used by a native double click.
+                // This avoids moving the user's mouse or injecting physical input into their desktop.
+                selectWord.Invoke(editor.Selection, [Call("SourcePosition", 0, 2)]);
+                if (text == "first next")
+                    Require(editor.Selection.Text == "first ", "native WPF word selection reproduces the trailing-space bug");
+                MouseDown(clicks: 2);
+                Require(editor.Selection.Text == word, $"double click selects only '{word}' in '{text}'");
+                Require(Text() == original, "trimming a double-click selection does not edit document text");
+            }
+
+            Load([new(DisplayLineKind.Context, 1, 1, "first next first")]);
+            selectWord.Invoke(editor.Selection, [Call("SourcePosition", 0, 2)]);
+            MouseDown(clicks: 2);
+            PumpUntil(() => Identifier() == "first" && Matches().Count == 2);
+            Require(editor.Selection.Text == "first", "double-clicked words activate exact occurrence matching");
+
+            Select(0, 0, 6);
+            MouseDown(clicks: 1);
+            Require(editor.Selection.Text == "first ", "single clicks do not trim existing selections");
+            Select(0, 0, 6);
+            Settled();
+            Require(editor.Selection.Text == "first " && Matches().Count == 0,
+                "drag and keyboard-style selections keep intentional trailing whitespace");
+            MouseDown(clicks: 2, button: MouseButton.Right);
+            Require(editor.Selection.Text == "first ", "right-button double clicks do not trim selections");
+            MouseDown(clicks: 3);
+            Require(editor.Selection.Text == "first ", "triple clicks retain native selection behavior");
+
+            var keys = (HashSet<Key>)type.GetField("pressedKeys", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(editor)!;
+            keys.Add(Key.LeftShift);
+            try
+            {
+                MouseDown(clicks: 2);
+                Require(editor.Selection.Text == "first ", "Shift-double-click keeps selection-extension whitespace");
+            }
+            finally
+            {
+                keys.Remove(Key.LeftShift);
+            }
+
+            Select(0, 5, 1);
+            MouseDown(clicks: 2);
+            Require(editor.Selection.Text == " ", "double-clicking a whitespace-only selection keeps it selectable");
+            Select(0, 0, 5);
+            MouseDown(clicks: 2);
+            Select(0, 0, 6);
+            Require(editor.Selection.Text == "first ", "extending a double-click selection can still include whitespace");
+            Console.WriteLine("PASS double-click whitespace trimming, syntax-run boundaries, Unicode, native word boundaries, exact matching, and intentional selections");
+        }
+        void MouseDown(int clicks, MouseButton button = MouseButton.Left)
+        {
+            // WPF's text editor handles MouseDown before instance handlers. Its native selection
+            // has already been applied above; deliver that handled event to the editor's post-handler.
+            var args = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, button)
+            {
+                RoutedEvent = Mouse.MouseDownEvent,
+                Handled = true
+            };
+            typeof(MouseButtonEventArgs).GetProperty("ClickCount")!.SetValue(args, clicks);
+            editor.RaiseEvent(args);
+        }
         void Capture(string? name)
         {
             host.UpdateLayout();

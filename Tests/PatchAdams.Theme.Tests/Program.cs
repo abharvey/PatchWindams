@@ -54,7 +54,15 @@ internal static class Program
         var window = new MainWindow();
         window.Show();
         Pump();
-        FontPreferencesTests.Run();
+        if (args.SequenceEqual(["--word-matching-only"]))
+        {
+            WordMatchUiTests.Run(window);
+            window.Close();
+            app.Shutdown();
+            Console.WriteLine("PASS double-click word selection and word matching");
+            return;
+        }
+        FontPreferencesTests.Run(window);
         DiffBackgroundTests.Run();
         var handle = new WindowInteropHelper(window).EnsureHandle();
         palette.ApplyTitleBar(window);

@@ -43,7 +43,7 @@ internal static partial class Program
             RunScrollbarTests(window);
             if (scrollbarsOnly)
             {
-                Console.WriteLine("PASS WPF scrollbars and native horizontal wheel/touchpad input.");
+                Console.WriteLine("PASS WPF scrollbars, native horizontal input, and proportional vertical wheel/touchpad input.");
                 return 0;
             }
             RunCopyCodeTests(window);
@@ -191,6 +191,138 @@ internal static partial class Program
         Pump();
         Check(viewer.VerticalOffset > before, "mouse-wheel scrolling is preserved");
         RunHorizontalWheelTests(window, editor, viewer);
+        RunVerticalWheelTests(window, editor, viewer);
+    }
+
+    private static void RunVerticalWheelTests(MainWindow window, RichTextBox editor, ScrollViewer viewer)
+    {
+        var other = (RichTextBox)((IDictionary)GetField(window, "codeEditors")!)["A"]!;
+        var otherViewer = (ScrollViewer)other.Template.FindName("PART_ContentHost", other);
+        other.Focus();
+        viewer.ScrollToVerticalOffset(viewer.ScrollableHeight / 2);
+        Pump();
+        var origin = viewer.VerticalOffset;
+        var horizontalBefore = viewer.HorizontalOffset;
+        var otherBefore = otherViewer.VerticalOffset;
+        var selectionBefore = editor.Selection.Text;
+        // Measure WPF's existing full-notch distance without passing through the preview handler.
+        viewer.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120)
+        {
+            RoutedEvent = Mouse.MouseWheelEvent
+        });
+        Pump();
+        var notch = viewer.VerticalOffset - origin;
+        Check(notch > 0 || SystemParameters.WheelScrollLines == 0,
+            "measure the existing mouse-wheel distance without changing Windows settings");
+
+        Reset();
+        Wheel(-15);
+        Pump();
+        Check(Math.Abs(viewer.VerticalOffset - origin - notch / 8) < 0.1,
+            "small vertical touchpad deltas move one eighth of a full notch, not a full multi-line step");
+        Wheel(15);
+        Pump();
+        Check(Math.Abs(viewer.VerticalOffset - origin) < 0.1,
+            "reversing a fine vertical gesture returns smoothly to its starting offset");
+
+        Reset();
+        for (var index = 0; index < 8; index++) Wheel(-15);
+        Pump();
+        Check(Math.Abs(viewer.VerticalOffset - origin - notch) < 0.1,
+            "a burst of eight small vertical deltas equals one normal mouse notch");
+        Reset();
+        Wheel(-15);
+        // Process queued input work without rendering/layout, as can happen between touchpad reports.
+        PumpInput();
+        Wheel(-15);
+        Pump();
+        Check(Math.Abs(viewer.VerticalOffset - origin - notch / 4) < 0.1,
+            "touchpad reports arriving between input dispatch and layout do not lose distance");
+        Reset();
+        Wheel(-15);
+        PumpInput();
+        Wheel(15);
+        Pump();
+        Check(Math.Abs(viewer.VerticalOffset - origin) < 0.1,
+            "reversing direction before layout cancels the earlier queued movement");
+        Reset();
+        Wheel(-120);
+        Pump();
+        Check(Math.Abs(viewer.VerticalOffset - origin - notch) < 0.1,
+            "ordinary mouse-wheel scrolling retains its existing distance");
+        Reset();
+        Wheel(-15);
+        Wheel(-120);
+        Wheel(15);
+        Pump();
+        Check(Math.Abs(viewer.VerticalOffset - origin - notch) < 0.1,
+            "mixed fine and full-notch input accumulates without dropping or double-counting steps");
+        Check(viewer.HorizontalOffset == horizontalBefore && otherViewer.VerticalOffset == otherBefore &&
+              other.IsKeyboardFocusWithin && editor.Selection.Text == selectionBefore,
+            "fine vertical scrolling does not change horizontal position, focus, selection, or another pane");
+
+        viewer.ScrollToVerticalOffset(0);
+        Pump();
+        Wheel(15);
+        Pump();
+        Check(viewer.VerticalOffset == 0, "fine vertical input stays at the top edge");
+        viewer.ScrollToVerticalOffset(viewer.ScrollableHeight);
+        Pump();
+        Wheel(-15);
+        Pump();
+        Check(Math.Abs(viewer.VerticalOffset - viewer.ScrollableHeight) < 0.1,
+            "fine vertical input stays at the bottom edge");
+        Reset();
+        Wheel(0);
+        Pump();
+        Check(Math.Abs(viewer.VerticalOffset - origin) < 0.1, "zero vertical delta does not move the document");
+
+        Wheel(-15);
+        editor.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+        Pump();
+        Check(Math.Abs(viewer.VerticalOffset - origin) < 0.1,
+            "unloading an editor cancels pending vertical input");
+
+        var document = editor.Document;
+        Wheel(-15);
+        try
+        {
+            editor.Document = new FlowDocument(new Paragraph(new Run(string.Join('\n',
+                Enumerable.Repeat("Replacement document line", 300)))));
+            Pump();
+            Check(viewer.VerticalOffset == 0, "replacing a document does not apply the previous document's queued gesture");
+        }
+        finally
+        {
+            editor.Document = document;
+            Pump();
+        }
+
+        void Reset()
+        {
+            viewer.ScrollToVerticalOffset(origin);
+            Pump();
+        }
+
+        void PumpInput()
+        {
+            var frame = new DispatcherFrame();
+            Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Input,
+                new Action(() => frame.Continue = false));
+            Dispatcher.PushFrame(frame);
+        }
+
+        void Wheel(int delta)
+        {
+            // Mirror the preview/bubble pair raised by WPF input, including its shared Handled flag.
+            var args = new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, delta)
+            {
+                RoutedEvent = Mouse.PreviewMouseWheelEvent
+            };
+            viewer.RaiseEvent(args);
+            args.RoutedEvent = Mouse.MouseWheelEvent;
+            viewer.RaiseEvent(args);
+        }
     }
 
     private static void RunHorizontalWheelTests(MainWindow window, RichTextBox editor, ScrollViewer viewer)
