@@ -16,7 +16,7 @@ using PatchAdamsSharp;
 
 // A separate Windows/STA runner exercises real WPF layout and modal event handlers.
 // The core fixture runner remains UI-independent. No user patches or settings are written.
-internal static class Program
+internal static partial class Program
 {
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
@@ -33,7 +33,13 @@ internal static class Program
         try
         {
             var scrollbarsOnly = args.SequenceEqual(["--scrollbars-only"]);
-            RunNavigationTests(window, loadOnly: scrollbarsOnly);
+            var perPatchFilesOnly = args.SequenceEqual(["--per-patch-files-only"]);
+            RunNavigationTests(window, loadOnly: scrollbarsOnly || perPatchFilesOnly);
+            if (perPatchFilesOnly)
+            {
+                RunPerPatchFileTests(window);
+                return 0;
+            }
             RunScrollbarTests(window);
             if (scrollbarsOnly)
             {
@@ -45,7 +51,8 @@ internal static class Program
             RunDisconnectedSelectionTests(window);
             RunReviewerFeedbackTests(window);
             RunRemoveFindingTests(window);
-            Console.WriteLine("PASS WPF navigation, scrollbars, copy code, deferred processing, disconnected selections, reviewer feedback, and finding removal.");
+            RunPerPatchFileTests(window);
+            Console.WriteLine("PASS WPF navigation, scrollbars, copy code, deferred processing, disconnected selections, reviewer feedback, finding removal, and per-patch files.");
             return 0;
         }
         catch (Exception error)
@@ -91,7 +98,7 @@ internal static class Program
 
         var columns = (IList)GetField(window, "columns")!;
         columns[1]!.GetType().GetProperty("IsHidden")!.SetValue(columns[1], true);
-        SetField(window, "selectedPath", "src/other.ts");
+        SetField(window, "sharedPath", "src/other.ts");
         Invoke(window, "RenderColumns", null!, null!);
         Pump();
         ((CheckBox)window.FindName("TestsOnlyToggle")).IsChecked = true;
@@ -457,7 +464,7 @@ internal static class Program
             Invoke(window, "NavigateToPostLine", "B", "src/other.ts", 130);
             Pump();
             Check(caption.Text == "src/other.ts", "shared filename follows file navigation");
-            SetField(window, "selectedPath", "not-in-base.ts");
+            SetField(window, "sharedPath", "not-in-base.ts");
             Invoke(window, "RenderColumns", null!, null!);
             Pump();
             Check(Descendants<Button>((Grid)window.FindName("ColumnsGrid"))
@@ -586,7 +593,7 @@ internal static class Program
                 };
                 columns[index].GetType().GetProperty("Applied")!.SetValue(columns[index], new AppliedPatch([file]));
             }
-            SetField(window, "selectedPath", "src/target.ts");
+            SetField(window, "sharedPath", "src/target.ts");
             Invoke(window, "RenderColumns", null!, null!);
             Pump();
             var editor = (RichTextBox)((IDictionary)GetField(window, "codeEditors")!)["A"]!;
@@ -1069,9 +1076,9 @@ internal static class Program
     private static void VerifyDestination(MainWindow window, string label, string path, int line,
         bool requireCentered = true)
     {
-        Check((string?)GetField(window, "selectedPath") == path, $"correct file: {path}");
         var editors = (IDictionary)GetField(window, "codeEditors")!;
         var editor = (RichTextBox)editors[label]!;
+        Check(EditorPath(editor) == path, $"correct file: {path}");
         var rows = (IEnumerable)editor.GetType().GetProperty("DisplayLines")!.GetValue(editor)!;
         var index = editor.Document.Blocks.Cast<Block>().ToList().IndexOf(editor.Selection.Start.Paragraph!);
         var selected = rows.Cast<DisplayLine>().ElementAt(index);
@@ -1079,7 +1086,8 @@ internal static class Program
         Check(editor.IsKeyboardFocusWithin, "destination editor receives keyboard focus");
         var viewer = (ScrollViewer)editor.Template.FindName("PART_ContentHost", editor);
         var bounds = editor.Selection.Start.GetCharacterRect(LogicalDirection.Forward);
-        Check(!bounds.IsEmpty && bounds.Bottom > 0 && bounds.Top < viewer.ViewportHeight, "target line is visible");
+        Check(!bounds.IsEmpty && bounds.Bottom > 0 && bounds.Top < viewer.ViewportHeight,
+            $"target line is visible (bounds {bounds}, viewport {viewer.ViewportHeight}, offset {viewer.VerticalOffset})");
         var fraction = (bounds.Top + bounds.Height / 2) / viewer.ViewportHeight;
         if (requireCentered)
             Check(fraction > 0.40 && fraction < 0.65, $"target is near midpoint (actual {fraction:P1})");

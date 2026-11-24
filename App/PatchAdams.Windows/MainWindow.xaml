@@ -4,7 +4,9 @@
         Style="{StaticResource AppWindowStyle}"
         Title="PatchAdams#" Width="1400" Height="900" MinWidth="720" MinHeight="500"
         Background="{StaticResource OneDarkWindow}" Foreground="{StaticResource OneDarkText}" PreviewKeyDown="Window_PreviewKeyDown"
-        AllowDrop="True" DragOver="MainWindow_DragOver" Drop="MainWindow_Drop">
+        AllowDrop="True" DragOver="MainWindow_DragOver" Drop="MainWindow_Drop"
+        PreviewMouseMove="FileDrag_PreviewMouseMove" PreviewMouseLeftButtonUp="FileDrag_PreviewMouseLeftButtonUp"
+        PreviewDragEnter="FileDrag_PreviewDragOver" PreviewDragOver="FileDrag_PreviewDragOver" PreviewDrop="FileDrag_PreviewDrop">
     <DockPanel>
         <Border DockPanel.Dock="Top" Background="{StaticResource OneDarkWindow}" Padding="8">
             <DockPanel>
@@ -102,8 +104,17 @@
                             <CheckBox x:Name="TestsOnlyToggle" Content="Tests only" Margin="12,0,0,0"
                                       VerticalAlignment="Center" Checked="TestsOnly_Changed" Unchecked="TestsOnly_Changed"/>
                         </DockPanel>
-                        <TreeView x:Name="FileTree" SelectedItemChanged="FileTree_SelectedItemChanged"
+                        <TextBlock x:Name="FileInteractionHint" DockPanel.Dock="Top" Margin="6,0,6,6"
+                                   FontSize="11" TextWrapping="Wrap"
+                                   Text="Double-click to open in all patches. Drag to open in one patch."/>
+                        <TreeView x:Name="FileTree" PreviewMouseLeftButtonDown="FileTree_PreviewMouseLeftButtonDown"
+                                  PreviewMouseDoubleClick="FileTree_PreviewMouseDoubleClick"
+                                  PreviewKeyDown="FileTree_PreviewKeyDown"
+                                  ContextMenuOpening="FileTree_ContextMenuOpening"
                                   Background="{StaticResource OneDarkWindow}" Foreground="{StaticResource OneDarkText}" BorderThickness="0">
+                            <TreeView.ContextMenu>
+                                <ContextMenu/>
+                            </TreeView.ContextMenu>
                             <TreeView.ItemTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap" Margin="2"/>

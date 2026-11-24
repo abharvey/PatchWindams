@@ -25,6 +25,8 @@ public partial class MainWindow : Window
     private readonly List<LoadedColumn> columns = [];
     private readonly Dictionary<string, CodeEditor> codeEditors = new(StringComparer.Ordinal);
     private readonly Dictionary<LoadedColumn, ColumnDefinition> columnDefinitions = [];
+    private readonly Dictionary<LoadedColumn, Border> columnSurfaces = [];
+    private readonly Dictionary<LoadedColumn, DockPanel> columnFileHeadings = [];
     private readonly Dictionary<string, ComboBox> rankPickers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> baseTextForFiles = new(StringComparer.Ordinal);
     private bool synchronizingScroll;
@@ -41,7 +43,6 @@ public partial class MainWindow : Window
     private string? baseRevision;
     private string? baseCommit;
     private string baseKind = "synthetic";
-    private string selectedPath = "";
     private Selection? selection;
     private string? golden;
     private ReviewSession? loadedSession;
@@ -169,6 +170,7 @@ public partial class MainWindow : Window
             }).OrderBy(column => column.Label, StringComparer.Ordinal).ToArray());
             if (generation != patchLoadGeneration) return;
             columns.Clear();
+            sharedPath = "";
             findings.Clear();
             comparisonFindings.Clear();
             ResetComparisonReview();
@@ -333,21 +335,15 @@ public partial class MainWindow : Window
             baseTextForFiles.Clear();
             foreach (var (path, text) in result.BaseTexts)
                 baseTextForFiles[path] = text;
-            files.Clear();
-            foreach (var path in columns.SelectMany(column => column.Applied!.Files)
-                         .SelectMany(file => file.Change.Kind == FileChangeKind.Renamed && file.Change.OldPath is not null
-                             ? new[] { file.Path, file.Change.OldPath! }
-                             : new[] { file.Path })
-                         .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
-            {
-                var statuses = columns.Select(column =>
-                {
-                    return $"{BlindDisplayLabel(column.Label)}:{StatusForColumn(column, path)}";
-                });
-                files.Add(new FileTreeEntry(path, string.Join("  ", statuses),
-                    FileChange.IsTestPath(path)));
-            }
-            RefreshFileTree();
+            RefreshFileEntries();
+            if (!files.Any(file => file.Path == sharedPath))
+                sharedPath = files.FirstOrDefault(file => TestsOnlyToggle.IsChecked != true || file.IsTest)?.Path
+                    ?? files.FirstOrDefault()?.Path ?? "";
+            foreach (var column in columns)
+                if (column.FileOverride == sharedPath || !files.Any(file => file.Path == column.FileOverride))
+                    column.FileOverride = null;
+            recentSelections.Clear();
+            RefreshFileTree(sharedPath);
 
             if (result.UsedFallback)
                 StatusText.Text = "The saved base is unavailable; rebuilt a synthetic base from the patches.";
@@ -358,11 +354,6 @@ public partial class MainWindow : Window
                 $"{column.Applied.Report.Fuzz} fuzz, {column.Applied.Report.Failed} failed, " +
                 $"{column.Applied.Report.Binary} binary"));
             RenderColumns();
-            if (visibleFiles.Count > 0)
-            {
-                selectedPath = visibleFiles[0].Path;
-                RenderColumns();
-            }
             RenderRanking();
         }
         catch (Exception error)
@@ -372,48 +363,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private void FileTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
-    {
-        if (e.NewValue is not FileTreeEntry entry || entry.Path == selectedPath) return;
-        selectedPath = entry.Path;
-        recentSelections.Clear();
-        RenderColumns();
-    }
-
-    private void SynchronizeFileTreeSelection()
-    {
-        var entry = visibleFiles.FirstOrDefault(item => item.Path == selectedPath);
-        if (entry is not null &&
-            FileTree.ItemContainerGenerator.ContainerFromItem(entry) is TreeViewItem treeItem)
-            treeItem.IsSelected = true;
-    }
-
-    private void TestsOnly_Changed(object sender, RoutedEventArgs e)
-    {
-        if (!IsInitialized) return;
-        RefreshFileTree();
-    }
-
-    private void RefreshFileTree()
-    {
-        visibleFiles.Clear();
-        foreach (var file in files.Where(file => TestsOnlyToggle.IsChecked != true || file.IsTest))
-            visibleFiles.Add(file);
-        if (!visibleFiles.Any(file => file.Path == selectedPath) && visibleFiles.Count > 0)
-        {
-            selectedPath = visibleFiles[0].Path;
-            RenderColumns();
-        }
-    }
-
     private AppliedFile? ColumnFile(LoadedColumn column, string path)
     {
-        var changed = column.Applied?.FileAt(path);
-        if (changed is not null) return changed;
-        var renamed = column.Applied?.Files.FirstOrDefault(file =>
-            file.Change.Kind == FileChangeKind.Renamed && file.Change.OldPath == path);
-        if (renamed?.BaseText is not null)
-            return AppliedFile.Deleted(path, renamed.BaseText);
+        var changed = PatchChangeAt(column, path);
+        if (changed?.Path == path) return changed;
+        if (changed?.BaseText is { } renamedBase)
+            return AppliedFile.Deleted(path, renamedBase);
         if (column.UnchangedFiles.TryGetValue(path, out var cached))
             return cached;
         if (!baseTextForFiles.TryGetValue(path, out var text) || text is null)
@@ -423,32 +378,42 @@ public partial class MainWindow : Window
         return unchanged;
     }
 
+    private static AppliedFile? PatchChangeAt(LoadedColumn column, string path) =>
+        column.Applied?.FileAt(path) ?? column.Applied?.Files.FirstOrDefault(file =>
+            file.Change.Kind == FileChangeKind.Renamed && file.Change.OldPath == path);
+
     private void RenderColumns(string? revealLabel = null, int? revealPostLine = null)
     {
         RenderColumnsCore(revealLabel, revealPostLine, null);
     }
 
-    private void RenderColumnsCore(string? revealLabel, int? revealPostLine, IReadOnlyList<LineRange>? revealRanges)
+    private void ResetRenderedSelection()
     {
         CancelComparisons();
         selectionCache = null;
         activeSelectionEditor = null;
         foreach (var existingEditor in codeEditors.Values)
             existingEditor.CancelPendingSelection();
+        selection = null;
+        UpdateDuplicateFindingButton();
+        UpdateComparisonCaptureButtons();
+        comparisons.Clear();
+        ReferenceText.Text = "Select lines in a column to generate a reference.";
+    }
+
+    private void RenderColumnsCore(string? revealLabel, int? revealPostLine, IReadOnlyList<LineRange>? revealRanges)
+    {
+        ResetRenderedSelection();
         CaptureColumnWidths();
         ColumnsGrid.Children.Clear();
         ColumnsGrid.ColumnDefinitions.Clear();
         columnDefinitions.Clear();
+        columnSurfaces.Clear();
+        columnFileHeadings.Clear();
         codeEditors.Clear();
-        selection = null;
-        UpdateComparisonCaptureButtons();
-        comparisons.Clear();
-        ReferenceText.Text = "Select lines in a column to generate a reference.";
-        SelectedFileText.Text = selectedPath;
-        SelectedFileText.Visibility = columns.Count > 0 && selectedPath.Length > 0
-            ? Visibility.Visible : Visibility.Collapsed;
         if (columns.Count == 0)
         {
+            RefreshOpenFileHeaders();
             BalanceWidthsButton.IsEnabled = false;
             return;
         }
@@ -471,104 +436,124 @@ public partial class MainWindow : Window
             };
             ColumnsGrid.ColumnDefinitions.Add(definition);
             columnDefinitions[column] = definition;
-            var appliedFile = ColumnFile(column, selectedPath);
-            var panel = new DockPanel { Margin = new Thickness(2) };
-            var header = new DockPanel { Margin = new Thickness(2, 0, 2, 3) };
-            var collapseLeft = new Button
+            var surface = new Border
             {
-                Content = "◀", FontSize = 10, Width = 28, Padding = new Thickness(0),
-                Margin = new Thickness(1, 0, 1, 0), ToolTip = "Collapse this patch to the left",
-                IsEnabled = visibleColumns.Length > 1
+                BorderBrush = Brushes.Transparent, BorderThickness = new Thickness(2),
+                Background = Brushes.Transparent
             };
-            collapseLeft.Click += (_, _) => CollapseColumn(column, CollapseSide.Left);
-            DockPanel.SetDock(collapseLeft, Dock.Left);
-            header.Children.Add(collapseLeft);
-            var collapseRight = new Button
-            {
-                Content = "▶", FontSize = 10, Width = 28, Padding = new Thickness(0),
-                Margin = new Thickness(1, 0, 1, 0), ToolTip = "Collapse this patch to the right",
-                IsEnabled = visibleColumns.Length > 1
-            };
-            collapseRight.Click += (_, _) => CollapseColumn(column, CollapseSide.Right);
-            DockPanel.SetDock(collapseRight, Dock.Right);
-            header.Children.Add(collapseRight);
-            var copyCode = CreateCopyCodeButton(column, appliedFile);
-            DockPanel.SetDock(copyCode, Dock.Right);
-            header.Children.Add(copyCode);
-            var title = BlindModeToggle.IsChecked == true
-                ? $"Patch {BlindDisplayLabel(column.Label)}{(column.IsRead ? " ✓" : "")}"
-                : $"{column.Label} — {column.SourceName}{(column.IsRead ? " ✓" : "")}";
-            header.Children.Add(new TextBlock
-            {
-                Text = title,
-                FontWeight = FontWeights.Bold,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                VerticalAlignment = VerticalAlignment.Center,
-                ToolTip = title
-            });
-            header.ContextMenu = CreateColumnMenu(column);
-            DockPanel.SetDock(header, Dock.Top);
-            panel.Children.Add(header);
-
-            var isGoldenDiff = golden is not null && column.Label != golden;
-            var canRenderFile = appliedFile is not null &&
-                appliedFile.Status.Kind is not ApplyStatusKind.Failed and not ApplyStatusKind.Binary &&
-                (appliedFile.PostText is not null || appliedFile.Change.Kind == FileChangeKind.Deleted);
-            var isLargeFile = appliedFile is not null &&
-                Math.Max(appliedFile.LineMap.PostLineCount, appliedFile.LineMap.BaseLineCount) > 50_000;
-            var targetLine = column.Label == revealLabel ? revealPostLine : null;
-            var targetRanges = column.Label == revealLabel ? revealRanges : null;
-            IReadOnlyList<DisplayLine> displayLines = canRenderFile
-                ? isGoldenDiff
-                    ? DisplayLines.CreateGoldenComparison(appliedFile!,
-                        ColumnFile(columns.First(item => item.Label == golden), selectedPath)?.PostText ?? "",
-                        isLargeFile, targetLine)
-                    : isLargeFile
-                        ? DisplayLines.CreateHunksOnly(appliedFile!, contextRows: targetLine.HasValue ? 40 : 3,
-                            includeRemoved: ShowRemovedToggle.IsChecked == true, revealPostLine: targetLine,
-                            revealRanges: targetRanges)
-                        : DisplayLines.Create(appliedFile!, includeRemoved: ShowRemovedToggle.IsChecked == true,
-                            revealPostLine: targetLine, revealRanges: targetRanges)
-                : [];
-            var renderedText = !canRenderFile
-                ? RenderColumnPlaceholder(column)
-                : isGoldenDiff
-                    ? string.Join('\n', displayLines.Select(line => (line.Kind switch
-                    {
-                        DisplayLineKind.Added => "+ ",
-                        DisplayLineKind.Removed => "- ",
-                        DisplayLineKind.CollapsedContext => "",
-                        _ => "  "
-                    }) + line.Text))
-                    : RenderDisplayLines(displayLines);
-            if (isLargeFile)
-                StatusText.Text = "Large file reduced to patch hunks with surrounding context.";
-            var editor = new CodeEditor
-            {
-                FontSize = fontSize,
-                FontFamily = new FontFamily(fontFamily),
-                Tag = new EditorContext(column, appliedFile, displayLines, isGoldenDiff),
-            };
-            editor.SetCode(DiffEngine.SplitLines(renderedText), displayLines,
-                Path.GetExtension(selectedPath).ToLowerInvariant(), !isGoldenDiff,
-                findings.Where(finding => finding.Label == column.Label && finding.Path == selectedPath).ToArray());
-            editor.SelectionActivity += CodeSelectionActivity;
-            editor.SelectionSettled += CodeSelectionSettled;
-            editor.Loaded += (_, _) =>
-            {
-                if (editor.Template.FindName("PART_ContentHost", editor) is ScrollViewer scrollViewer)
-                {
-                    scrollViewer.Tag = new EditorContext(column, appliedFile, displayLines, isGoldenDiff);
-                    scrollViewer.ScrollChanged += CodeScrollChanged;
-                }
-            };
-            codeEditors[column.Label] = editor;
-            panel.Children.Add(editor);
-            Grid.SetColumn(panel, gridColumn++);
-            ColumnsGrid.Children.Add(panel);
+            columnSurfaces[column] = surface;
+            RenderColumn(column, column.Label == revealLabel ? revealPostLine : null,
+                column.Label == revealLabel ? revealRanges : null);
+            Grid.SetColumn(surface, gridColumn++);
+            ColumnsGrid.Children.Add(surface);
         }
         if (rightTabs.Length > 0)
             AddCollapsedStrip(rightTabs, CollapseSide.Right, gridColumn++);
+        RefreshOpenFileHeaders();
+    }
+
+    private void RenderColumn(LoadedColumn column, int? targetLine = null, IReadOnlyList<LineRange>? targetRanges = null)
+    {
+        var path = OpenPath(column);
+        var appliedFile = ColumnFile(column, path);
+        var panel = new DockPanel();
+        var header = new DockPanel { Margin = new Thickness(2, 0, 2, 3) };
+        var canCollapse = columns.Count(candidate => !candidate.IsHidden) > 1;
+        var collapseLeft = new Button
+        {
+            Content = "◀", FontSize = 10, Width = 28, Padding = new Thickness(0),
+            Margin = new Thickness(1, 0, 1, 0), ToolTip = "Collapse this patch to the left",
+            IsEnabled = canCollapse
+        };
+        collapseLeft.Click += (_, _) => CollapseColumn(column, CollapseSide.Left);
+        DockPanel.SetDock(collapseLeft, Dock.Left);
+        header.Children.Add(collapseLeft);
+        var collapseRight = new Button
+        {
+            Content = "▶", FontSize = 10, Width = 28, Padding = new Thickness(0),
+            Margin = new Thickness(1, 0, 1, 0), ToolTip = "Collapse this patch to the right",
+            IsEnabled = canCollapse
+        };
+        collapseRight.Click += (_, _) => CollapseColumn(column, CollapseSide.Right);
+        DockPanel.SetDock(collapseRight, Dock.Right);
+        header.Children.Add(collapseRight);
+        var copyCode = CreateCopyCodeButton(column, appliedFile);
+        DockPanel.SetDock(copyCode, Dock.Right);
+        header.Children.Add(copyCode);
+        var title = BlindModeToggle.IsChecked == true
+            ? $"Patch {BlindDisplayLabel(column.Label)}{(column.IsRead ? " ✓" : "")}"
+            : $"{column.Label} — {column.SourceName}{(column.IsRead ? " ✓" : "")}";
+        header.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontWeight = FontWeights.Bold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = title
+        });
+        header.ContextMenu = CreateColumnMenu(column);
+        DockPanel.SetDock(header, Dock.Top);
+        panel.Children.Add(header);
+        var fileHeading = CreateColumnFileHeading(column, path);
+        columnFileHeadings[column] = fileHeading;
+        DockPanel.SetDock(fileHeading, Dock.Top);
+        panel.Children.Add(fileHeading);
+
+        var isGoldenDiff = golden is not null && column.Label != golden;
+        var canRenderFile = appliedFile is not null &&
+            appliedFile.Status.Kind is not ApplyStatusKind.Failed and not ApplyStatusKind.Binary &&
+            (appliedFile.PostText is not null || appliedFile.Change.Kind == FileChangeKind.Deleted);
+        var isLargeFile = appliedFile is not null &&
+            Math.Max(appliedFile.LineMap.PostLineCount, appliedFile.LineMap.BaseLineCount) > 50_000;
+        // Golden comparisons still use the same path in the reference patch, not the file open in its pane.
+        IReadOnlyList<DisplayLine> displayLines = canRenderFile
+            ? isGoldenDiff
+                ? DisplayLines.CreateGoldenComparison(appliedFile!,
+                    ColumnFile(columns.First(item => item.Label == golden), path)?.PostText ?? "",
+                    isLargeFile, targetLine)
+                : isLargeFile
+                    ? DisplayLines.CreateHunksOnly(appliedFile!, contextRows: targetLine.HasValue ? 40 : 3,
+                        includeRemoved: ShowRemovedToggle.IsChecked == true, revealPostLine: targetLine,
+                        revealRanges: targetRanges)
+                    : DisplayLines.Create(appliedFile!, includeRemoved: ShowRemovedToggle.IsChecked == true,
+                        revealPostLine: targetLine, revealRanges: targetRanges)
+            : [];
+        var renderedText = !canRenderFile
+            ? RenderColumnPlaceholder(appliedFile)
+            : isGoldenDiff
+                ? string.Join('\n', displayLines.Select(line => (line.Kind switch
+                {
+                    DisplayLineKind.Added => "+ ",
+                    DisplayLineKind.Removed => "- ",
+                    DisplayLineKind.CollapsedContext => "",
+                    _ => "  "
+                }) + line.Text))
+                : RenderDisplayLines(displayLines);
+        if (isLargeFile)
+            StatusText.Text = "Large file reduced to patch hunks with surrounding context.";
+        var context = new EditorContext(column, path, appliedFile, displayLines, isGoldenDiff);
+        var editor = new CodeEditor
+        {
+            FontSize = fontSize,
+            FontFamily = new FontFamily(fontFamily),
+            Tag = context,
+        };
+        editor.SetCode(DiffEngine.SplitLines(renderedText), displayLines,
+            Path.GetExtension(path).ToLowerInvariant(), !isGoldenDiff,
+            findings.Where(finding => finding.Label == column.Label && finding.Path == path).ToArray());
+        editor.SelectionActivity += CodeSelectionActivity;
+        editor.SelectionSettled += CodeSelectionSettled;
+        editor.Loaded += (_, _) =>
+        {
+            if (editor.Template.FindName("PART_ContentHost", editor) is ScrollViewer scrollViewer)
+            {
+                scrollViewer.Tag = context;
+                scrollViewer.ScrollChanged += CodeScrollChanged;
+            }
+        };
+        codeEditors[column.Label] = editor;
+        panel.Children.Add(editor);
+        columnSurfaces[column].Child = panel;
     }
 
     private Button CreateCopyCodeButton(LoadedColumn column, AppliedFile? file)
@@ -592,7 +577,8 @@ public partial class MainWindow : Window
 
     private void CopyCode(LoadedColumn column)
     {
-        var code = ResultingCode.From(ColumnFile(column, selectedPath), baseKind == "synthetic");
+        var path = OpenPath(column);
+        var code = ResultingCode.From(ColumnFile(column, path), baseKind == "synthetic");
         if (code is null) return;
         try
         {
@@ -600,7 +586,7 @@ public partial class MainWindow : Window
                 Clipboard.Clear();
             else
                 Clipboard.SetText(code.Text);
-            StatusText.Text = $"Copied code · {BlindDisplayLabel(column.Label)} · {selectedPath}" +
+            StatusText.Text = $"Copied code · {BlindDisplayLabel(column.Label)} · {path}" +
                 (code.OmittedUnknownLines > 0
                     ? $" — omitted {code.OmittedUnknownLines} unknown synthetic lines; choose a base for the complete file."
                     : "");
@@ -647,7 +633,7 @@ public partial class MainWindow : Window
             definition.Width = new GridLength(widths[index], GridUnitType.Star);
         }
         ColumnsGrid.UpdateLayout();
-        StatusText.Text = $"Balanced {expanded.Length} patch widths for the current file.";
+        StatusText.Text = $"Balanced {expanded.Length} patch widths.";
     }
 
     private void AddSplitter(int gridColumn)
@@ -694,7 +680,7 @@ public partial class MainWindow : Window
                 Margin = new Thickness(1, 2, 1, 2),
                 Padding = new Thickness(0),
                 HorizontalAlignment = HorizontalAlignment.Stretch,
-                ToolTip = $"Expand {name}"
+                ToolTip = column.FileOverride is { } path ? $"Expand {name} · {path}" : $"Expand {name}"
             };
             tab.Click += (_, _) => RestoreColumn(column);
             tab.ContextMenu = new ContextMenu();
@@ -822,9 +808,8 @@ public partial class MainWindow : Window
             $"{(line.PostLine?.ToString() ?? "").PadLeft(postWidth)} | {line.Text}"));
     }
 
-    private string RenderColumnPlaceholder(LoadedColumn column)
+    private static string RenderColumnPlaceholder(AppliedFile? file)
     {
-        var file = column.Applied?.FileAt(selectedPath);
         return file?.Status.Kind == ApplyStatusKind.Failed
             ? $"[Failed to apply]\n{file.Status.Message}\n\nRaw patch hunks remain available in the source file."
             : file?.Status.Kind == ApplyStatusKind.Binary ? "[Binary file change]" : "[File absent in this patch]";
@@ -885,7 +870,6 @@ public partial class MainWindow : Window
             foreach (var entry in cached.Comparisons) comparisons.Add(entry);
             return;
         }
-        if (selectedPath.Length == 0) return;
         try
         {
             var groups = selectedRows.Select(span => context.DisplayLines.Skip(span.Lower - 1)
@@ -946,8 +930,10 @@ public partial class MainWindow : Window
         LoadedColumn sourceColumn, AppliedFile sourceFile, IReadOnlyList<LineSpan> spans, CancellationToken token)
     {
         // Snapshot all mutable UI state before leaving the dispatcher.
-        var path = selectedPath;
-        var requests = columns.Where(column => column.Label != sourceColumn.Label).SelectMany(column => spans.Select(span =>
+        // Base line maps and manual anchors are relative to a single path.
+        var path = sourceFile.Path;
+        var requests = columns.Where(column => column != sourceColumn && OpenPath(column) == path)
+            .SelectMany(column => spans.Select(span =>
         {
             var target = ColumnFile(column, path);
             var manual = manualAnchors.LastOrDefault(anchor =>
@@ -974,7 +960,7 @@ public partial class MainWindow : Window
     {
         if (ComparisonList.SelectedItem is not ComparisonEntry entry || entry.File is null ||
             !codeEditors.TryGetValue(entry.Column.Label, out var editor) ||
-            editor.Tag is not EditorContext context)
+            editor.Tag is not EditorContext context || context.Path != entry.File.Path)
             return;
 
         var rows = context.DisplayLines.ToList();
@@ -998,14 +984,15 @@ public partial class MainWindow : Window
 
     private void CodeScrollChanged(object sender, ScrollChangedEventArgs e)
     {
-        if (e.VerticalChange == 0 || synchronizingScroll || ScrollLockToggle.IsChecked != true ||
+        if (e.VerticalChange == 0 || e.ExtentHeightChange != 0 || e.ViewportHeightChange != 0 ||
+            synchronizingScroll || ScrollLockToggle.IsChecked != true ||
             sender is not ScrollViewer source || source.Tag is not EditorContext sourceContext ||
+            !codeEditors.TryGetValue(sourceContext.Column.Label, out var sourceEditor) ||
+            !ReferenceEquals(source.TemplatedParent, sourceEditor) ||
             sourceContext.DisplayLines.Count == 0)
             return;
 
-        var firstVisible = source.TemplatedParent is CodeEditor sourceEditor
-            ? sourceEditor.FirstVisibleRow()
-            : (int)e.VerticalOffset;
+        var firstVisible = sourceEditor.FirstVisibleRow();
         var sourceRow = Math.Clamp(firstVisible, 0, sourceContext.DisplayLines.Count - 1);
         var baseLine = sourceContext.DisplayLines[sourceRow].BaseLine ??
                        sourceContext.DisplayLines.Take(sourceRow + 1)
@@ -1020,7 +1007,9 @@ public partial class MainWindow : Window
                 if (editor.Template.FindName("PART_ContentHost", editor) is not ScrollViewer target ||
                     ReferenceEquals(target, source))
                     continue;
-                if (target.Tag is not EditorContext targetContext || targetContext.DisplayLines.Count == 0)
+                if (target.Tag is not EditorContext targetContext || targetContext.Path != sourceContext.Path)
+                    continue;
+                if (targetContext.DisplayLines.Count == 0)
                 {
                     editor.ScrollToRow(sourceRow);
                     continue;
@@ -1046,6 +1035,13 @@ public partial class MainWindow : Window
     private void BlindMode_Changed(object sender, RoutedEventArgs e)
     {
         if (!IsInitialized) return;
+        if (BlindModeToggle.IsChecked == true && HasFileOverrides)
+        {
+            ClearFileOverrides();
+            recentSelections.Clear();
+        }
+        RefreshFileEntries();
+        RefreshFileTree();
         RefreshComparisonFindings();
         PopulateGoldenMenu();
         RenderColumns();
@@ -1418,10 +1414,9 @@ public partial class MainWindow : Window
         var entry = files.FirstOrDefault(item => item.Path == path);
         if (TestsOnlyToggle.IsChecked == true && entry?.IsTest != true)
             TestsOnlyToggle.IsChecked = false;
-        selectedPath = path;
+        OpenNavigationFile(column, path);
         recentSelections.Clear();
         FileTree.UpdateLayout();
-        SynchronizeFileTreeSelection();
         // Expose the requested row even outside a large file's visible hunks.
         RenderColumns(label, postLine);
         if (!codeEditors.TryGetValue(label, out var editor) ||
@@ -1449,13 +1444,10 @@ public partial class MainWindow : Window
         };
     }
 
-    private string StatusForColumn(LoadedColumn column, string path)
+    private static string StatusForColumn(LoadedColumn column, string path)
     {
-        var file = column.Applied?.FileAt(path);
-        if (file is null && column.Applied?.Files.Any(change =>
-                change.Change.Kind == FileChangeKind.Renamed && change.Change.OldPath == path) == true)
-            return "deleted";
-        return StatusFor(file);
+        var change = PatchChangeAt(column, path);
+        return change is not null && change.Path != path ? "deleted" : StatusFor(change);
     }
 
     private void ShowRawPatch_Click(object sender, RoutedEventArgs e)
@@ -1467,7 +1459,7 @@ public partial class MainWindow : Window
             return;
         }
         var column = columns.FirstOrDefault(candidate => candidate.Patch.Files.Any(file =>
-                file.Path == selectedPath || file.OldPath == selectedPath))
+                file.Path == sharedPath || file.OldPath == sharedPath))
             ?? columns.FirstOrDefault();
         if (column is null) return;
         var viewer = new RawPatchWindow($"{column.Label} — {column.SourceName}", column.PatchText) { Owner = this };
@@ -1513,7 +1505,8 @@ public partial class MainWindow : Window
         baseRevision = null;
         baseCommit = null;
         baseKind = "synthetic";
-        selectedPath = "";
+        sharedPath = "";
+        ClearFileOverrides();
         golden = null;
         promptedForBlindMode = false;
         blindSeed = unchecked((ulong)Random.Shared.NextInt64());
@@ -1722,9 +1715,10 @@ public partial class MainWindow : Window
 
     private void NavigateToSelection(string label, string path, IReadOnlyList<LineRange> ranges)
     {
-        selectedPath = path;
         var column = columns.FirstOrDefault(column => column.Label == label);
-        if (column is not null) column.IsHidden = false;
+        if (column is null) return;
+        column.IsHidden = false;
+        OpenNavigationFile(column, path);
         // Removed-side anchors refer to the shared base, not another golden patch's text.
         if (golden is not null && golden != label)
         {
@@ -1776,6 +1770,7 @@ public partial class MainWindow : Window
             }).ToArray());
             if (generation != patchLoadGeneration) return;
             columns.Clear();
+            sharedPath = "";
             findings.Clear();
             comparisonFindings.Clear();
             findingLabels.Clear();
@@ -1845,6 +1840,7 @@ public partial class MainWindow : Window
         public Patch Patch { get; } = patch;
         public AppliedPatch? Applied { get; set; }
         public Dictionary<string, AppliedFile> UnchangedFiles { get; } = new(StringComparer.Ordinal);
+        public string? FileOverride { get; set; }
         public bool IsHidden { get; set; }
         public bool IsRead { get; set; }
         public CollapseSide CollapsedTo { get; set; } = CollapseSide.Right;
@@ -1862,7 +1858,7 @@ public partial class MainWindow : Window
 
     private sealed record Selection(
         LoadedColumn Column, AppliedFile File, IReadOnlyList<LineRange> Ranges, string Reference, string Snippet);
-    private sealed record EditorContext(LoadedColumn Column, AppliedFile? File,
+    private sealed record EditorContext(LoadedColumn Column, string Path, AppliedFile? File,
         IReadOnlyList<DisplayLine> DisplayLines, bool IsGoldenDiff);
     private sealed record SelectionCache(CodeEditor Editor, IReadOnlyList<LineSpan> Rows,
         Selection Selection, ComparisonEntry[] Comparisons);
