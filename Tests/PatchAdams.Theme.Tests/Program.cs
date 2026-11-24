@@ -54,7 +54,7 @@ internal static class Program
         var window = new MainWindow();
         window.Show();
         Pump();
-        FontPreferencesTests.Run();
+        FontPreferencesTests.Run(window);
         DiffBackgroundTests.Run();
         var handle = new WindowInteropHelper(window).EnsureHandle();
         palette.ApplyTitleBar(window);

@@ -4,6 +4,11 @@
              xmlns:local="clr-namespace:PatchAdamsSharp"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
+        <!-- Fit small UI text and its layout to device pixels. Keep Windows' font and antialiasing defaults. -->
+        <Style x:Key="AppWindowStyle" TargetType="Window">
+            <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+            <Setter Property="UseLayoutRounding" Value="True"/>
+        </Style>
         <!-- Legacy resource names are retained; bound colors update even StaticResource consumers. -->
         <SolidColorBrush x:Key="OneDarkWindow" Color="{Binding [#282C33], Source={x:Static local:ThemePalette.Current}}"/>
         <SolidColorBrush x:Key="OneDarkSurface" Color="{Binding [#2F343E], Source={x:Static local:ThemePalette.Current}}"/>

@@ -1874,6 +1874,7 @@ internal sealed class TextPromptDialog : Window
 
     private TextPromptDialog(string title, string prompt)
     {
+        SetResourceReference(StyleProperty, "AppWindowStyle");
         Title = title;
         SizeToContent = SizeToContent.WidthAndHeight;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -1921,6 +1922,7 @@ internal sealed class PreferencesDialog : Window
 
     public PreferencesDialog(string fontFamily, double fontSize, bool askBlindMode)
     {
+        SetResourceReference(StyleProperty, "AppWindowStyle");
         Title = "PatchAdams# settings";
         Owner = Application.Current.MainWindow;
         Width = 420;
@@ -2013,6 +2015,7 @@ internal sealed class SearchResultsWindow : Window
 
     public SearchResultsWindow(string query, IReadOnlyList<string> hits)
     {
+        SetResourceReference(StyleProperty, "AppWindowStyle");
         Title = $"Search results — {query}";
         Width = 850;
         Height = 550;
