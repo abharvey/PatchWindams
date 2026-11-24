@@ -8,8 +8,12 @@ internal static class FontPreferencesTests
 {
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
-    public static void Run()
+    public static void Run(MainWindow window)
     {
+        var fileTree = (TreeView)window.FindName("FileTree");
+        CheckUiText(fileTree, $"file tree ({fileTree.FontFamily.Source})");
+        CheckEditorText(window.Style);
+
         // Use the current machine's font catalog, not a font installed only on a developer's machine.
         var installed = Fonts.SystemFontFamilies.First(family => family.Source.Contains(' '));
         CheckName(installed.Source, expectedValid: true);
@@ -20,6 +24,23 @@ internal static class FontPreferencesTests
         CheckName($"PatchAdams Missing Font 0F7318C2, {installed.Source}", expectedValid: false);
         CheckName("   ", expectedValid: false);
         CheckName("PatchAdams Missing Font 0F7318C2", expectedValid: false, correction: installed.Source);
+    }
+
+    private static void CheckEditorText(Style windowStyle)
+    {
+        var type = typeof(MainWindow).Assembly.GetType("PatchAdamsSharp.CodeEditor", throwOnError: true)!;
+        var editor = (RichTextBox)Activator.CreateInstance(type)!;
+        var host = new Window { Style = windowStyle, Content = editor };
+        try
+        {
+            Check(TextOptions.GetTextFormattingMode(editor) == TextFormattingMode.Ideal &&
+                  TextOptions.GetTextFormattingMode(editor.Document) == TextFormattingMode.Ideal &&
+                  !editor.UseLayoutRounding, "code editor retains its original text and layout metrics");
+        }
+        finally
+        {
+            host.Close();
+        }
     }
 
     private static void CheckName(string name, bool expectedValid, string? correction = null)
@@ -34,6 +55,7 @@ internal static class FontPreferencesTests
         {
             try
             {
+                CheckUiText(fontBox, "settings font field");
                 var panel = (Panel)dialog.Content;
                 var buttons = panel.Children.OfType<Panel>().Single();
                 var apply = buttons.Children.OfType<Button>().Single(button => (string?)button.Content == "Apply");
@@ -73,6 +95,10 @@ internal static class FontPreferencesTests
             Check((string)type.GetProperty("SelectedFontFamily")!.GetValue(dialog)! == (correction ?? name).Trim(),
                 "accepted font preserves the family name and trims outer whitespace");
     }
+
+    private static void CheckUiText(FrameworkElement element, string context) =>
+        Check(TextOptions.GetTextFormattingMode(element) == TextFormattingMode.Display && element.UseLayoutRounding,
+            $"{context} uses pixel-aligned UI text and layout");
 
     private static void Check(bool condition, string message)
     {

@@ -68,6 +68,9 @@ internal sealed partial class CodeEditor : RichTextBox
         Foreground = Plain;
         BorderBrush = Brush("#818A98");
         Padding = new Thickness(12, 3, 3, 3);
+        // Keep code metrics independent of the surrounding UI's pixel-aligned text and layout.
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Ideal);
+        UseLayoutRounding = false;
         FontFamily = new FontFamily("Consolas");
         FontSize = 13;
         Document = new FlowDocument

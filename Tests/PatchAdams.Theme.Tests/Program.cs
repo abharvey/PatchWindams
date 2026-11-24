@@ -62,7 +62,7 @@ internal static class Program
             Console.WriteLine("PASS double-click word selection and word matching");
             return;
         }
-        FontPreferencesTests.Run();
+        FontPreferencesTests.Run(window);
         DiffBackgroundTests.Run();
         var handle = new WindowInteropHelper(window).EnsureHandle();
         palette.ApplyTitleBar(window);
